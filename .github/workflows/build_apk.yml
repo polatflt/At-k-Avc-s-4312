@@ -1,0 +1,114 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Kodu indir
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Java kur
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Sistem bagimliklarini kur
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            git zip unzip python3-pip \
+            build-essential libssl-dev libffi-dev \
+            libsqlite3-dev zlib1g-dev autoconf \
+            libtool pkg-config cmake libltdl-dev
+
+      - name: Buildozer ve Cython kur
+        run: |
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.33
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}-v10
+          restore-keys: |
+            ${{ runner.os }}-buildozer-
+
+      - name: Android SDK + NDK hazirla (Buildozer uyumlu dizin yapisi)
+        run: |
+          SDK=$HOME/.buildozer/android/platform/android-sdk
+          NDK_VER=r25b
+          NDK=$HOME/.buildozer/android/platform/android-ndk-$NDK_VER
+
+          mkdir -p $SDK
+
+          # ── SDK kurulumu ──────────────────────────────────────────────────
+          # Buildozer tools/bin/sdkmanager yolunu arar.
+          # commandlinetools-6514223 ZIP'i direkt "tools/" klasoru olarak cikar.
+          if [ ! -f "$SDK/tools/bin/sdkmanager" ]; then
+            echo "SDK kuruluyor..."
+            wget -q \
+              https://dl.google.com/android/repository/commandlinetools-linux-6514223_latest.zip \
+              -O /tmp/cmdtools.zip
+            unzip -q /tmp/cmdtools.zip -d $SDK
+            # ZIP icinden "tools/" cikiyor, yolu dogrula
+            ls $SDK/tools/bin/sdkmanager
+          else
+            echo "SDK zaten mevcut, atlaniyor."
+          fi
+
+          SDKMANAGER="$SDK/tools/bin/sdkmanager"
+
+          # Lisanslari otomatik kabul et
+          yes | $SDKMANAGER --sdk_root=$SDK --licenses 2>/dev/null || true
+
+          # Gerekli paketleri yukle
+          yes | $SDKMANAGER --sdk_root=$SDK \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.2" \
+            2>/dev/null || true
+
+          # ── NDK kurulumu ──────────────────────────────────────────────────
+          if [ ! -d "$NDK" ]; then
+            echo "NDK kuruluyor..."
+            wget -q \
+              https://dl.google.com/android/repository/android-ndk-r25b-linux.zip \
+              -O /tmp/ndk.zip
+            unzip -q /tmp/ndk.zip \
+              -d $HOME/.buildozer/android/platform/
+            # ZIP "android-ndk-r25b" olarak cikar, isim kontrolu:
+            ls $HOME/.buildozer/android/platform/ | grep ndk
+          else
+            echo "NDK zaten mevcut, atlaniyor."
+          fi
+
+          echo "=== SDK ===" && ls $SDK
+          echo "=== build-tools ===" && ls $SDK/build-tools/ 2>/dev/null || true
+          echo "=== NDK ===" && ls $NDK | head -5
+
+      - name: APK Derle
+        env:
+          ANDROID_SDK_ROOT: /home/runner/.buildozer/android/platform/android-sdk
+          ANDROID_NDK_HOME: /home/runner/.buildozer/android/platform/android-ndk-r25b
+        run: |
+          buildozer -v android debug 2>&1
+
+      - name: APK yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: AtikAvcisi-APK
+          path: "**/*.apk"
+          if-no-files-found: warn
